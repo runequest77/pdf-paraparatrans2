@@ -346,6 +346,103 @@ def create_paragraph_blueprint(
             return jsonify({"status": "error", "message": f"AI 表再抽出エラー: {str(e)}"}), 500
 
     # ------------------------------------------------------------------
+    # /api/reextract_table_roi/<path:pdf_name> — ROI ベース表再抽出
+    # ------------------------------------------------------------------
+
+    @bp.route("/api/reextract_table_roi/<path:pdf_name>", methods=["POST"])
+    def reextract_table_roi_api(pdf_name):
+        """ROI ベースのグリッド推定で表領域を自動検出し段落として再抽出する。
+
+        選択段落の bbox 全体をひとつのテーブル領域として扱い、
+        行・列を自動検出してマークダウン行形式の段落を追加する。
+
+        Request JSON:
+            current_page (int): 対象ページ番号（1始まり）。
+            paragraph_ids (list[str]): 選択段落 ID のリスト。
+            rows (int, optional): 行数のヒント（0 または省略で自動推定）。
+            cols (int, optional): 列数のヒント（0 または省略で自動推定）。
+
+        Response JSON (ok):
+            status: "ok"
+            message: 追加件数を含むメッセージ。
+            added (int): 追加した行数。
+            delta (dict): 更新されたページデータ。
+
+        Response JSON (error):
+            status: "error"
+            message: エラーメッセージ。
+        """
+        pdf_path, json_path = get_paths(pdf_name)
+        if not os.path.exists(json_path):
+            return jsonify({"status": "error", "message": "JSONファイルが存在しません"}), 404
+        if not os.path.exists(pdf_path):
+            return jsonify({"status": "error", "message": "PDFファイルが存在しません"}), 404
+
+        data = request.get_json(silent=True) or {}
+        page_number = data.get("current_page") or data.get("page_number")
+        paragraph_ids = data.get("paragraph_ids") or []
+
+        hint_rows = 0
+        hint_cols = 0
+        try:
+            v = data.get("rows")
+            if v is not None:
+                hint_rows = max(0, int(v))
+        except Exception:
+            pass
+        try:
+            v = data.get("cols")
+            if v is not None:
+                hint_cols = max(0, int(v))
+        except Exception:
+            pass
+
+        try:
+            page_number = int(page_number)
+        except Exception:
+            return jsonify({"status": "error", "message": "current_page が不正です"}), 400
+
+        if page_number <= 0:
+            return jsonify({"status": "error", "message": "current_page は1以上で指定してください"}), 400
+
+        if not isinstance(paragraph_ids, list):
+            return jsonify({"status": "error", "message": "paragraph_ids は配列で指定してください"}), 400
+
+        paragraph_ids = [str(pid).strip() for pid in paragraph_ids if str(pid).strip()]
+        if len(paragraph_ids) < 1:
+            return jsonify({"status": "error", "message": "1行以上選択してください"}), 400
+
+        try:
+            added, delta = paragraph_service.reextract_table_from_selection_roi(
+                pdf_name=pdf_name,
+                json_path=json_path,
+                pdf_path=pdf_path,
+                page_number=page_number,
+                paragraph_ids=paragraph_ids,
+                hint_rows=hint_rows,
+                hint_cols=hint_cols,
+            )
+
+            if added <= 0:
+                return jsonify({"status": "error", "message": "ROI 再抽出結果が0件でした"}), 200
+
+            return jsonify(
+                {
+                    "status": "ok",
+                    "message": f"ROI 表再抽出でテーブル行を{added}件追加しました",
+                    "added": added,
+                    "delta": delta,
+                }
+            ), 200
+        except ValueError as e:
+            return jsonify({"status": "error", "message": str(e)}), 400
+        except LookupError as e:
+            return jsonify({"status": "error", "message": str(e)}), 404
+        except Exception as e:
+            current_app.logger.error(f"table ROI reextract error: {str(e)}")
+            return jsonify({"status": "error", "message": f"ROI 表再抽出エラー: {str(e)}"}), 500
+
+    # ------------------------------------------------------------------
     # /api/ai_providers — 利用可能な AI プロバイダ一覧
     # ------------------------------------------------------------------
 

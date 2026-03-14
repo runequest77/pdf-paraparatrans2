@@ -26,6 +26,10 @@ from modules.parapara_table_reextract import (
     render_region_to_png,
     suggest_table_shape_for_selection,
 )
+from modules.parapara_table_reextract_roi import (
+    append_roi_table_rows_from_selection,
+    estimate_grid_for_paragraphs,
+)
 from modules.parapara_tagging_by_structure import structure_tagging
 from modules.parapara_tagging_by_style import tag_paragraphs_by_style
 from modules.parapara_tagging_by_style_y import tag_paragraphs_by_style_y_in_file
@@ -359,6 +363,85 @@ class ParagraphService:
                 rows=rows,
                 cols=cols,
                 header_text=header_text,
+            )
+
+        recalc_trans_status_counts(book_data)
+        atomicsave_json(json_path, book_data)
+
+        delta = {
+            "pages": {page_key: (book_data.get("pages", {}) or {}).get(page_key)},
+            "trans_status_counts": book_data.get("trans_status_counts"),
+        }
+        return added, delta
+
+    # ------------------------------------------------------------------
+    # /api/reextract_table_roi
+    # ------------------------------------------------------------------
+
+    def reextract_table_from_selection_roi(
+        self,
+        pdf_name: str,
+        json_path: str,
+        pdf_path: str,
+        page_number: int,
+        paragraph_ids: list,
+        hint_rows: int = 0,
+        hint_cols: int = 0,
+    ) -> Tuple[int, dict]:
+        """ROI ベースのグリッド推定で選択領域の表を再抽出して保存する。
+
+        選択段落の bbox 全体をひとつのテーブル領域として扱い、
+        行・列を自動検出して段落を追加する。
+
+        Args:
+            pdf_name: PDF ファイル名。
+            json_path: 段落 JSON のパス。
+            pdf_path: PDF ファイルのパス。
+            page_number: 対象ページ番号（1始まり）。
+            paragraph_ids: 選択段落 ID のリスト。
+            hint_rows: 行数のヒント（0 なら自動推定）。
+            hint_cols: 列数のヒント（0 なら自動推定）。
+
+        Returns:
+            (追加行数, delta)
+
+        Raises:
+            ValueError: URLブックの場合、または入力が不正な場合。
+            LookupError: ページや段落が見つからない場合。
+        """
+        if self._is_url_book_name(pdf_name):
+            raise ValueError("URLブックは対象外です")
+
+        page_key = str(page_number)
+        book_data = load_json(json_path)
+        page_obj = (book_data.get("pages", {}) or {}).get(page_key)
+        if not isinstance(page_obj, dict):
+            raise LookupError("対象ページが見つかりません")
+
+        page_paragraphs = page_obj.get("paragraphs", {}) or {}
+        available_ids = [pid for pid in paragraph_ids if pid in page_paragraphs]
+        if len(available_ids) < 1:
+            raise LookupError("選択段落が見つかりません")
+
+        table_id = f"p{page_number}_{uuid.uuid4().hex[:8]}"
+
+        rows_hint = max(0, int(hint_rows)) if hint_rows else 0
+        cols_hint = max(0, int(hint_cols)) if hint_cols else 0
+
+        with fitz.open(pdf_path) as doc:
+            page_index = page_number - 1
+            if page_index < 0 or page_index >= len(doc):
+                raise ValueError("対象ページ番号が範囲外です")
+
+            page = doc[page_index]
+            added = append_roi_table_rows_from_selection(
+                page=page,
+                page_number=page_number,
+                page_paragraphs=page_paragraphs,
+                paragraph_ids=available_ids,
+                table_id=table_id,
+                hint_rows=rows_hint if rows_hint > 0 else None,
+                hint_cols=cols_hint if cols_hint > 0 else None,
             )
 
         recalc_trans_status_counts(book_data)

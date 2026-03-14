@@ -1995,7 +1995,21 @@ async function reextractTableFromSelectedLines(paragraphIds) {
         }
 
         let response;
-        if (result.mode === 'ai') {
+        if (result.mode === 'roi') {
+            // ROI ベース自動抽出
+            response = await fetch(`/api/reextract_table_roi/${encodePdfNamePath(pdfName)}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    current_page: currentPage,
+                    paragraph_ids: ids,
+                    rows: result.rows || undefined,
+                    cols: result.cols || undefined,
+                })
+            });
+        } else if (result.mode === 'ai') {
             // AI による表再抽出
             response = await fetch(`/api/reextract_table_ai/${encodePdfNamePath(pdfName)}`, {
                 method: 'POST',
@@ -3060,7 +3074,11 @@ async function showTableReextractDialog(options) {
                     <label style="display: block; margin-bottom: 6px; font-weight: bold;">抽出方式:</label>
                     <div class="trd-mode-selector">
                         <label>
-                            <input type="radio" name="trdMode" value="grid" checked />
+                            <input type="radio" name="trdMode" value="roi" checked />
+                            ROI 自動抽出
+                        </label>
+                        <label>
+                            <input type="radio" name="trdMode" value="grid" />
                             グリッド指定（従来）
                         </label>
                         <label>
@@ -3070,7 +3088,14 @@ async function showTableReextractDialog(options) {
                     </div>
                 </div>
 
-                <div id="trdGridSection">
+                <div id="trdRoiSection" style="margin-bottom: 15px;">
+                    <div class="trd-ai-info">
+                        <strong>選択段落の bbox 全体をひとつのテーブル領域として行・列を自動検出します。</strong><br>
+                        行数・列数はヒントとして使用します（0 または空欄で自動推定）。
+                    </div>
+                </div>
+
+                <div id="trdGridSection" style="display: none;">
                     <div style="margin-bottom: 15px;">
                         <label style="display: block; margin-bottom: 5px; font-weight: bold;">ヘッダ（カンマ区切り）:</label>
                         <input type="text" id="tableHeaderInput" value="${headerText || ''}" />
@@ -3081,12 +3106,12 @@ async function showTableReextractDialog(options) {
                 <div style="margin-bottom: 15px;">
                     <label style="display: block; margin-bottom: 5px; font-weight: bold;">行数:</label>
                     <input type="number" id="tableRowsInput" value="${guessedRows}" min="1" />
-                    <small class="trd-hint">テーブルの行数（AI モードではヒントとして使用）</small>
+                    <small class="trd-hint">テーブルの行数（ROI / AI モードではヒントとして使用）</small>
                 </div>
                 <div style="margin-bottom: 15px;">
                     <label style="display: block; margin-bottom: 5px; font-weight: bold;">列数:</label>
                     <input type="number" id="tableColsInput" value="${guessedCols}" min="1" />
-                    <small class="trd-hint">テーブルの列数（AI モードではヒントとして使用）</small>
+                    <small class="trd-hint">テーブルの列数（ROI / AI モードではヒントとして使用）</small>
                 </div>
                 <div id="trdGuessRow" style="margin-bottom: 15px;">
                     <div class="trd-guess">
@@ -3102,7 +3127,7 @@ async function showTableReextractDialog(options) {
                 </div>
 
                 <div class="trd-actions">
-                    <button id="tableDialogPreview" class="trd-btn">枠線描画</button>
+                    <button id="tableDialogPreview" class="trd-btn" style="display: none;">枠線描画</button>
                     <button id="tableDialogCancel" class="trd-btn">キャンセル</button>
                     <button id="tableDialogOK" class="trd-btn trd-btn-primary">OK</button>
                 </div>
@@ -3122,20 +3147,19 @@ async function showTableReextractDialog(options) {
         const okButton = document.getElementById('tableDialogOK');
         const cancelButton = document.getElementById('tableDialogCancel');
         const previewButton = document.getElementById('tableDialogPreview');
+        const roiSection = document.getElementById('trdRoiSection');
         const gridSection = document.getElementById('trdGridSection');
         const aiSection = document.getElementById('trdAiSection');
-
-        // フォーカスをヘッダ入力に設定
-        setTimeout(() => headerInput.focus(), 100);
 
         // モード切替ハンドラ
         const modeRadios = container.querySelectorAll('input[name="trdMode"]');
         const updateMode = () => {
-            const isAI = container.querySelector('input[name="trdMode"]:checked')?.value === 'ai';
-            gridSection.style.display = isAI ? 'none' : '';
-            aiSection.style.display = isAI ? '' : 'none';
-            previewButton.style.display = isAI ? 'none' : '';
-            if (!isAI) {
+            const mode = container.querySelector('input[name="trdMode"]:checked')?.value || 'roi';
+            roiSection.style.display = mode === 'roi' ? '' : 'none';
+            gridSection.style.display = mode === 'grid' ? '' : 'none';
+            aiSection.style.display = mode === 'ai' ? '' : 'none';
+            previewButton.style.display = mode === 'grid' ? '' : 'none';
+            if (mode === 'grid') {
                 setTimeout(() => headerInput.focus(), 50);
             }
         };
@@ -3146,12 +3170,16 @@ async function showTableReextractDialog(options) {
         };
 
         const getSelectedMode = () =>
-            container.querySelector('input[name="trdMode"]:checked')?.value || 'grid';
+            container.querySelector('input[name="trdMode"]:checked')?.value || 'roi';
 
         const resolveValues = () => {
             const mode = getSelectedMode();
             const rows = parseInt(rowsInput.value, 10) || guessedRows;
             const colsRaw = parseInt(colsInput.value, 10) || guessedCols;
+
+            if (mode === 'roi') {
+                return { mode: 'roi', rows, cols: colsRaw };
+            }
 
             if (mode === 'ai') {
                 return { mode: 'ai', rows, cols: colsRaw };
